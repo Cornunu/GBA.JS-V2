@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Console GBA.js</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="resources/console.css" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0;
+      background: #111;
+      color: #eee;
+      font-family: monospace;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+    }
+    #top {
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+      gap: 20px;
+    }
+    #main, #memory {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+    section {
+      background: #1a1a1a;
+      padding: 10px;
+      border: 1px solid #333;
+      border-radius: 6px;
+    }
+    canvas#screen {
+      width: 240px;
+      height: 160px;
+      border: 1px solid #444;
+      display: block;
+      margin: auto;
+      image-rendering: pixelated;
+    }
+    #consoleContainer { flex: 1; }
+    #consoleControls label { margin-right: 10px; }
+    #console {
+      list-style: none;
+      padding: 0;
+      height: 120px;
+      overflow-y: auto;
+      background: #000;
+      color: #0f0;
+      font-size: 12px;
+      margin-top: 10px;
+      border: 1px solid #444;
+    }
+    #console li { padding: 2px 6px; }
+    #controls button, #saving button, #loading input, #breakpointControls input, #memoryControls input, select {
+      margin: 4px 2px;
+      background: #222;
+      border: 1px solid #444;
+      color: #eee;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    h3 { margin-top: 0; font-size: 14px; }
+    ul { padding-left: 20px; }
+    input[type="file"] { background: none; border: none; color: #ccc; }
+    #registers, #breakpoints, #memory {
+      flex: 1;
+      min-width: 250px;
+      max-width: 400px;
+    }
+  </style>
+  <script src="js/util.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/arm.js"></script>
+  <script src="js/thumb.js"></script>
+  <script src="js/mmu.js"></script>
+  <script src="js/io.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/video.js"></script>
+  <script src="js/video/proxy.js"></script>
+  <script src="js/video/software.js"></script>
+  <script src="js/irq.js"></script>
+  <script src="js/keypad.js"></script>
+  <script src="js/sio.js"></script>
+  <script src="js/savedata.js"></script>
+  <script src="js/gpio.js"></script>
+  <script src="js/gba.js"></script>
+  <script src="resources/xhr.js"></script>
+  <script src="resources/console.js"></script>
+  <script>
+    function runTest(r) {
+      core.setRom(r);
+      core.DEBUG("ROM loaded: " + core.rom.title + " [" + core.rom.code + "] (" + r.byteLength + " bytes)");
+      gbaCon.memory.refreshAll();
+    }
+    function loadRomFromFile(romFile) {
+      const reader = new FileReader();
+      reader.onload = e => runTest(e.target.result);
+      reader.readAsArrayBuffer(romFile);
+    }
+    function setLogLevel(level, enabled) {
+      core.logLevel &= ~level;
+      core.logLevel |= enabled && level;
+    }
+    function screenshot() {
+      const canvas = document.getElementById('screen');
+      window.open(canvas.toDataURL('image/png'), 'screenshot');
+    }
+    function savestate() {
+      gbaCon.pause();
+      const state = core.freeze();
+      Serializer.serializePNG(Serializer.serialize(state), document.getElementById('screen'), url => {
+        document.getElementById('saveState').src = url;
+      });
+    }
+    function loadSavestate(state) {
+      Serializer.deserializePNG(state, result => {
+        core.defrost(result);
+        core.DEBUG('Loaded state');
+      });
+    }
+
+    const core = new GameBoyAdvance();
+    setLogLevel(core.LOG_DEBUG, true);
+    core.cpu.resetCPU(0);
+    let gbaCon;
+
+    window.onload = () => {
+      const canvas = document.getElementById('screen');
+      core.setCanvas(canvas);
+      gbaCon = new Console(core);
+      core.DEBUG("Logging begun!");
+      core.DEBUG("Loading BIOS...");
+      loadRom('resources/bios.bin', bios => {
+        core.setBios(bios, false);
+        core.DEBUG("BIOS loaded!");
+        gbaCon.memory.refreshAll();
+      });
+    };
+  </script>
+</head>
+<body>
+  <section id="top">
+    <section id="consoleContainer">
+      <div id="consoleControls">
+        <label><input type="checkbox" checked onclick="setLogLevel(core.LOG_ERROR, this.checked)">ERROR</label>
+        <label><input type="checkbox" checked onclick="setLogLevel(core.LOG_WARN, this.checked)">WARN</label>
+        <label><input type="checkbox" onclick="setLogLevel(core.LOG_STUB, this.checked)">STUB</label>
+        <label><input type="checkbox" onclick="setLogLevel(core.LOG_INFO, this.checked)">INFO</label>
+        <label><input type="checkbox" checked onclick="setLogLevel(core.LOG_DEBUG, this.checked)">DEBUG</label>
+      </div>
+      <ul id="console"></ul>
+      <img id="saveState" style="max-width: 100%;">
+    </section>
+
+    <section id="main">
+      <section id="display">
+        <canvas id="screen" width="240" height="160"></canvas>
+      </section>
+      <section id="controls">
+        <button onclick="gbaCon.step()">Step</button>
+        <button onclick="gbaCon.runVisible()">Run slowly</button>
+        <button onclick="gbaCon.runFrame()">Next frame</button>
+        <button onclick="gbaCon.run()">Run</button>
+        <button onclick="gbaCon.pause()">Pause</button>
+      </section>
+      <section id="loading">
+        Load ROM: <input type="file" onchange="loadRomFromFile(this.files[0])">
+      </section>
+      <section id="saving">
+        <button onclick="document.getElementById('uploadSave').click()">Load savedata</button>
+        <input type="file" id="uploadSave" style="display:none" onchange="core.loadSavedataFromFile(this.files[0])">
+        <button onclick="core.downloadSavedata()">Download savedata</button>
+        <button onclick="core.storeSavedata()">Store savedata</button>
+        <button onclick="screenshot()">Screenshot</button>
+        <button onclick="savestate()">Freeze</button>
+        <input type="file" id="uploadSavestate" style="display:none" onchange="loadSavestate(this.files[0])">
+        <button onclick="document.getElementById('uploadSavestate').click()">Defrost</button>
+      </section>
+    </section>
+
+    <section id="registers">
+      <h3>GPRs</h3>
+      <ol id="gprs">
+        <li id="r0">0x00000000</li><li id="r1">0x00000000</li><li id="r2">0x00000000</li><li id="r3">0x00000000</li>
+        <li id="r4">0x00000000</li><li id="r5">0x00000000</li><li id="r6">0x00000000</li><li id="r7">0x00000000</li>
+        <li id="r8">0x00000000</li><li id="r9">0x00000000</li><li id="r10">0x00000000</li><li id="r11">0x00000000</li>
+        <li id="r12">0x00000000</li><li id="r13">0x00000000</li><li id="r14">0x00000000</li><li id="r15">0x00000000</li>
+      </ol>
+      <h3>Status</h3>
+      <ol id="psr">
+        <li id="cpsrN">N</li><li id="cpsrZ">Z</li><li id="cpsrC">C</li><li id="cpsrV">V</li>
+        <li id="cpsrI">I</li><li id="cpsrT">T</li><li>Mode: <span id="mode">SYSTEM</span></li>
+      </ol>
+    </section>
+
+    <section id="breakpoints">
+      <div id="breakpointControls">
+        Add breakpoint: <input type="text" onchange="gbaCon.addBreakpoint(parseInt(this.value, 16))">
+      </div>
+      <ul id="breakpointView"></ul>
+    </section>
+
+    <section id="memory">
+      <div id="memoryControls">
+        <h3>Jump to:</h3>
+        <ul>
+          <li>
+            Region:
+            <select onchange="gbaCon.memory.scrollTo(this.options[this.selectedIndex].value * 0x01000000)">
+              <option value="0">0x00000000: BIOS</option>
+              <option value="2">0x02000000: On-Board RAM</option>
+              <option value="3">0x03000000: In-Chip RAM</option>
+              <option value="4">0x04000000: I/O</option>
+              <option value="5">0x05000000: Palette</option>
+              <option value="6">0x06000000: VRAM</option>
+              <option value="7">0x07000000: OAM</option>
+              <option value="8">0x08000000: Gamepak WS 0</option>
+              <option value="10">0x0A000000: Gamepak WS 1</option>
+              <option value="12">0x0C000000: Gamepak WS 2</option>
+              <option value="14">0x0E000000: Gamepak SRAM</option>
+            </select>
+          </li>
+          <li>
+            Address:
+            <input type="text" onchange="gbaCon.memory.scrollTo(parseInt(this.value, 16))">
+          </li>
+        </ul>
+      </div>
+      <ul id="memoryView"></ul>
+    </section>
+  </section>
+</body>
+</html>

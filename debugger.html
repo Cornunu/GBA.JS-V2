@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Debugger GBA.js - NandoX</title>
+<style>
+  body {
+    margin: 0; padding: 10px;
+    font-family: Arial, sans-serif;
+    background: #f4f4f4;
+    color: #222;
+  }
+  h3 {
+    margin-top: 15px;
+  }
+  #consoleControls label {
+    margin-right: 10px;
+    font-size: 0.9em;
+  }
+  #console {
+    list-style: none;
+    height: 140px;
+    overflow-y: auto;
+    background: #fff;
+    border: 1px solid #ccc;
+    padding: 5px;
+    font-family: monospace;
+    font-size: 0.85em;
+  }
+  #console li {
+    margin-bottom: 2px;
+  }
+  #saveState {
+    max-width: 100%;
+    margin-top: 10px;
+    border: 1px solid #ccc;
+  }
+  #main {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    margin-top: 15px;
+  }
+  #display, #controls, #saving, #registers, #breakpoints, #memory {
+    background: white;
+    padding: 10px;
+    border: 1px solid #ccc;
+    flex-grow: 1;
+    min-width: 280px;
+  }
+  select, input[type="text"], button {
+    font-size: 1em;
+    padding: 5px;
+    margin-top: 5px;
+    margin-bottom: 10px;
+  }
+  button {
+    cursor: pointer;
+    border: none;
+    background-color: #444;
+    color: white;
+    border-radius: 4px;
+  }
+  button:hover {
+    background-color: #666;
+  }
+  ol {
+    padding-left: 20px;
+    font-family: monospace;
+    font-size: 0.9em;
+    margin: 5px 0;
+  }
+  ol li {
+    margin-bottom: 3px;
+  }
+  #breakpointControls input {
+    width: 100px;
+  }
+  #breakpointView, #memoryView {
+    list-style: none;
+    max-height: 100px;
+    overflow-y: auto;
+    padding-left: 0;
+    border: 1px solid #ccc;
+    background: #fafafa;
+  }
+  #breakpointView li, #memoryView li {
+    padding: 3px 5px;
+    border-bottom: 1px solid #ddd;
+  }
+  @media (max-width: 800px) {
+    #main {
+      flex-direction: column;
+    }
+  }
+</style>
+<script>
+  let gbaCon;
+  let master = null;
+  let gba = null;
+
+  window.onmessage = function(message) {
+    if (message.origin !== document.domain && (message.origin !== 'file://' || document.domain)) {
+      console.log('Falha no XSS');
+      return;
+    }
+    switch (message.data) {
+      case 'connect':
+        master = message.source;
+        initialize(master.gba);
+        master.postMessage('connected', document.domain || '*');
+        break;
+      case 'disconnect':
+        master = null;
+        if (gbaCon && gbaCon.gba) {
+          gbaCon.gba.DEBUG('Emulador desconectado');
+        }
+        gbaCon = null;
+        gba = null;
+        window.close();
+        break;
+    }
+  };
+
+  function setLogLevel(level, enabled) {
+    if (!gba) return;
+    gba.logLevel &= ~level;
+    if (enabled) gba.logLevel |= level;
+  }
+
+  function initialize(gbaInstance) {
+    window.gba = gbaInstance;
+    gba = gbaInstance;
+    gba.logLevel = gba.LOG_ERROR | gba.LOG_WARN | gba.LOG_DEBUG;
+    // Criar console simples para logs
+    gbaCon = new Console(gba);
+    gba.DEBUG('Debugger inicializado');
+  }
+
+  function savestate() {
+    if (!gbaCon) return;
+    gbaCon.pause();
+    const state = gba.freeze();
+    Serializer.serializePNG(Serializer.serialize(state), master.document.getElementById('screen'), url => {
+      const img = document.getElementById('saveState');
+      img.setAttribute('src', url);
+    });
+  }
+
+  function loadSavestate(state) {
+    try {
+      Serializer.deserializePNG(state, result => {
+        gba.defrost(result);
+        gba.DEBUG('Estado carregado');
+      });
+    } catch (ex) {
+      if (gba) gba.ERROR('Falha ao carregar estado', ex);
+    }
+  }
+
+  window.onload = function() {
+    if (window.opener) {
+      window.opener.postMessage('connect', document.domain || '*');
+    }
+  }
+
+  window.onunload = function() {
+    if (gba) gba.doStep = gba.waitFrame;
+    if (master) {
+      master.postMessage('disconnect', document.domain || '*');
+    }
+  }
+
+  // Exemplo simples da classe Console para o debugger (você pode ajustar conforme o seu core)
+  class Console {
+    constructor(gba) {
+      this.gba = gba;
+      this.consoleEl = document.getElementById('console');
+      this.gba.logHandler = this.logHandler.bind(this);
+      this.breakpoints = new Set();
+      this.memory = {
+        scrollTo: function(addr) {
+          const memView = document.getElementById('memoryView');
+          memView.innerHTML = '<li>Memória saltada para: 0x' + addr.toString(16).padStart(8,'0') + '</li>';
+        }
+      };
+    }
+    logHandler(level, msg) {
+      const li = document.createElement('li');
+      li.textContent = `[${level}] ${msg}`;
+      this.consoleEl.appendChild(li);
+      this.consoleEl.scrollTop = this.consoleEl.scrollHeight;
+    }
+    DEBUG(msg) { this.logHandler('DEBUG', msg); }
+    ERROR(msg) { this.logHandler('ERROR', msg); }
+    WARN(msg) { this.logHandler('WARN', msg); }
+    step() { this.gba.step && this.gba.step(); }
+    run() { this.gba.runStable && this.gba.runStable(); }
+    pause() { this.gba.pause && this.gba.pause(); }
+    runVisible() { this.run(); }  // simplificado
+    runFrame() { this.gba.runFrame && this.gba.runFrame(); }
+    addBreakpoint(addr) {
+      if (!isNaN(addr)) {
+        this.breakpoints.add(addr);
+        this.updateBreakpointView();
+      }
+    }
+    updateBreakpointView() {
+      const list = document.getElementById('breakpointView');
+      list.innerHTML = '';
+      this.breakpoints.forEach(addr => {
+        const li = document.createElement('li');
+        li.textContent = '0x' + addr.toString(16).padStart(8,'0');
+        list.appendChild(li);
+      });
+    }
+    setView(view) {
+      const viewer = document.getElementById('debugViewer');
+      viewer.innerHTML = '<p>Visualização: ' + (view ? view.name || view : 'None') + '</p>';
+    }
+  }
+</script>
+
+</head>
+<body>
+
+<section id="top">
+  <section id="consoleContainer">
+    <div id="consoleControls">
+      <label><input type="checkbox" checked onclick="setLogLevel(gba.LOG_ERROR, this.checked)"> ERROR</label>
+      <label><input type="checkbox" checked onclick="setLogLevel(gba.LOG_WARN, this.checked)"> WARN</label>
+      <label><input type="checkbox" onclick="setLogLevel(gba.LOG_STUB, this.checked)"> STUB</label>
+      <label><input type="checkbox" onclick="setLogLevel(gba.LOG_INFO, this.checked)"> INFO</label>
+      <label><input type="checkbox" checked onclick="setLogLevel(gba.LOG_DEBUG, this.checked)"> DEBUG</label>
+    </div>
+    <ul id="console"></ul>
+    <img id="saveState" alt="Save State Preview" />
+  </section>
+
+  <section id="main">
+    <section id="display">
+      <select id="debugViewSelector" onchange="gbaCon.setView(gbaCon[this.options[this.selectedIndex].value])">
+        <option>None</option>
+        <option value="paletteView">Palette</option>
+        <option value="tileView">Tile</option>
+      </select>
+      <div id="debugViewer" style="min-height: 150px; margin-top: 10px; background: #eee; border: 1px solid #ccc; padding: 10px;"></div>
+    </section>
+
+    <section id="controls">
+      <button onclick="gbaCon.step()">Step</button>
+      <button onclick="gbaCon.runVisible()">Run Slowly</button>
+      <button onclick="gbaCon.runFrame()">Next Frame</button>
+      <button onclick="gbaCon.run()">Run Quickly</button>
+      <button onclick="gbaCon.pause()">Pause</button>
+    </section>
+
+    <section id="saving">
+      <button onclick="document.getElementById('uploadSave').click()">Load Savedata</button>
+      <input type="file" id="uploadSave" style="display:none" onchange="gba.loadSavedataFromFile(this.files[0])" />
+      <button onclick="gba.downloadSavedata()">Download Savedata</button>
+      <button onclick="gba.storeSavedata()">Store Savedata</button>
+      <button onclick="savestate()">Freeze</button>
+      <input type="file" id="uploadSavestate" style="display:none" onchange="loadSavestate(this.files[0])" />
+      <button onclick="document.getElementById('uploadSavestate').click()">Defrost</button>
+    </section>
+
+    <section id="registers">
+      <div>
+        <h3>GPRs</h3>
+        <ol id="gprs">
+          <li id="r0">0x00000000</li>
+          <li id="r1">0x00000000</li>
+          <li id="r2">0x00000000</li>
+          <li id="r3">0x00000000</li>
+          <li id="r4">0x00000000</li>
+          <li id="r5">0x00000000</li>
+          <li id="r6">0x00000000</li>
+          <li id="r7">0x00000000</li>
+          <li id="r8">0x00000000</li>
+          <li id="r9">0x00000000</li>
+          <li id="r10">0x00000000</li>
+          <li id="r11">0x00000000</li>
+          <li id="r12">0x00000000</li>
+          <li id="r13">0x00000000</li>
+          <li id="r14">0x00000000</li>
+          <li id="r15">0x00000000</li>
+        </ol>
+      </div>
+      <div>
+        <h3>Status bits</h3>
+        <ol id="psr">
+          <li id="cpsrN">N</li>
+          <li id="cpsrZ">Z</li>
+          <li id="cpsrC">C</li>
+          <li id="cpsrV">V</li>
+          <li id="cpsrI">I</li>
+          <li id="cpsrT">T</li>
+          <li>Mode: <span id="mode">SYSTEM</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="breakpoints">
+      <div id="breakpointControls">
+        Add breakpoint:
+        <input type="text" onchange="gbaCon.addBreakpoint(parse
